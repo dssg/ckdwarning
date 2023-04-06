@@ -1,0 +1,696 @@
+# CONFIG_VERSION
+config_version: 'v8'
+
+model_comment: 'subsetonly'
+random_seed: 101
+
+temporal_config:
+
+    feature_start_time: '2010-01-01'
+    feature_end_time: '2022-12-31'
+
+    label_start_time: '2015-01-01'
+    label_end_time: '2022-12-31' 
+
+    model_update_frequency: '1year'
+
+    # length of time defining a test set
+    test_durations: ['0day']
+    # defines how far back a training set reaches
+    max_training_histories: ['10year'] 
+
+    training_as_of_date_frequencies: ['6month'] 
+    test_as_of_date_frequencies: ['1year']
+    
+    label_timespans: ['1year']
+
+
+# input: {as_of_date}, {label_timespan}
+# output: table with 2 columns: entity_id, outcome 
+# outcome is 0,1, null (for those with undetermined ckd status)
+
+
+label_config:
+    filepath: 'cohort_label_all.sql'
+    name: 'ckd_future'
+
+
+###########################################################No changes above  this point###########################################################
+
+feature_aggregations:
+  - # demographics 
+    prefix: 'demos'
+    from_obj: |
+          (select entity_id, gender,marital_status,birth_date,upper(city) as city,zip, ethnicity,race,
+          greatest(birth_date,'2010-01-01') as dob from demographics) as dems
+    knowledge_date_column: 'dob'
+
+    aggregates_imputation:
+      all:
+        type: 'mean'
+
+    categoricals_imputation:
+      all:
+        type: 'null_category'    
+
+    #getting gender info        
+    categoricals:
+      -
+        column: 'gender'
+        metrics:
+          - 'max' 
+        choice_query: 'select distinct gender from demographics'
+
+      -
+        column: 'ethnicity'
+        metrics:
+          - 'max' 
+        choice_query: 'select distinct ethnicity from demographics'
+
+      -
+        column: 'marital_status'
+        metrics:
+          - 'max' 
+        choice_query: 'select distinct marital_status from demographics'
+
+      -
+        column: 'race'
+        metrics:
+          - 'max'
+        choice_query: 'select distinct race from demographics'
+
+        column: 'zip' 
+        choice_query: | 
+              SELECT DISTINCT zip_code_upper
+                      FROM (
+                               SELECT upper(zip) as zip_code_upper, 
+                                      count(*) as counts
+                                FROM demographics
+                                GROUP BY upper(zip) order by count(*) desc limit 10
+                           ) AS zip_counts 
+        metrics: 
+          - 'max'
+
+      - column: 'city'
+        metrics:
+          - 'max'
+        choice_query: | 
+              SELECT DISTINCT city_upper
+                      FROM (
+                               SELECT upper(city) as city_upper, 
+                                      count(*) as counts
+                                FROM demographics
+                                GROUP BY upper(city) order by count(*) desc limit 10
+                           ) AS city_counts 
+            
+
+    aggregates:
+      - # age in years
+        quantity: 
+          age: "extract(year from age('{collate_date}'::date,  birth_date::date))"
+        metrics:
+          - 'max'
+   
+    intervals: ['all']
+
+  - # encounters 
+    prefix: 'encounters'
+    from_obj: 'encounters'
+    knowledge_date_column: 'visit_admit_dttm'
+
+    aggregates_imputation:
+            all:
+                type: 'zero_noflag'
+
+    categoricals_imputation:
+            all:
+                type: 'null_category'
+
+    categoricals:
+    - 
+      column: 'encounter_type'
+      metrics:
+        - 'max'
+        - 'count'
+      choice_query: |
+              SELECT DISTINCT encounter_type
+                      FROM (
+                               SELECT encounter_type, 
+                                      count(*) as counts
+                                FROM encounters
+                                GROUP BY encounter_type order by count(*) desc limit 5
+                           ) AS encounter_counts  
+                        
+
+    aggregates:
+    - # total number of past visits
+      quantity:
+        total: "*"
+      metrics:
+        - 'count'
+
+    - # total number of past hospital visits
+      quantity:
+        hospital_visits: "case when lower(encounter_type) = '3' then 1 else 0 end"
+      metrics:
+        - 'sum'
+
+    - # total number of past office visits
+      quantity:
+        office_visits: "case when lower(encounter_type) = '101' then 1 else 0 end"
+      metrics:
+        - 'sum'
+
+    - # total number of unique days visited in the past
+      quantity:
+        unique_days_visited: "distinct DATE(visit_admit_dttm)"
+      metrics:
+        - 'count'
+
+
+    intervals: ['1month','3month','12month','all']
+
+
+  - # days since encounter
+    prefix: 'days_since'
+    from_obj: 'encounters'
+    knowledge_date_column: 'visit_admit_dttm'
+    aggregates_imputation:
+      all:
+        type: 'mean'
+    aggregates:
+    - # days since first and last encounter
+      quantity:
+        last_encounter: "'{collate_date}'::DATE - visit_discharge_dttm::DATE"
+      metrics:
+          - 'min'
+          - 'max'
+      imputation:
+        all:
+          type: 'constant'
+          value: 10000
+    intervals: ['all']
+
+    # - # days since first and last office visit
+    #   quantity:
+    #     last_encounter: "'{collate_date}'::DATE - contact_date::DATE where lower(encounters.encounter_type) = '101'"
+    #   metrics:
+    #       - 'min'
+    #       - 'max'
+    #   imputation:
+    #     all:
+    #       type: 'constant'
+    #       value: 10000 
+    # intervals: ['50y']
+
+
+  # - # procedures , procedure types non added yet
+  #   prefix: 'proc'
+  #   from_obj: 'procedures'
+  #   knowledge_date_column: 'tx_post_date'
+  #   aggregates_imputation:
+  #     all:
+  #       type: 'zero_noflag'
+
+  #   categoricals_imputation:
+  #     all:
+  #       type: 'null_category'    
+
+  #   categoricals:
+
+  #   - #  procedure codes
+  #     column: cpt_code
+  #     choice_query: |
+  #                     SELECT DISTINCT cpt_code_upper 
+  #                     FROM (
+  #                              SELECT (cpt_code) as cpt_code_upper, 
+  #                                     count(*) as counts
+  #                               FROM procedures
+  #                               GROUP BY (cpt_code_upper) order by count(*) desc limit 50
+  #                          ) AS cpt_counts
+              
+  #     metrics: 
+  #       - 'max'
+  #       - 'sum'
+
+  #   - #  procedure type
+  #     column: enc_type_c
+  #     choice_query: |
+  #                     SELECT DISTINCT enc_type_c_upper 
+  #                     FROM (
+  #                              SELECT (enc_type_c) as enc_type_c_upper, 
+  #                                     count(*) as counts
+  #                               FROM procedures
+  #                               GROUP BY (enc_type_c_upper) order by count(*) desc limit 50
+  #                          ) AS cpt_counts
+              
+  #     metrics: 
+  #       - 'max'
+  #       - 'sum'        
+
+  #   intervals: ['all']
+  #   groups: ['entity_id']
+
+
+  -
+    prefix: 'labs'
+    from_obj: 'labs'
+    knowledge_date_column: 'event_dttm'
+
+    categoricals_imputation:
+            all:
+                type: 'null_category'
+    aggregates_imputation:
+            all:
+                type: 'zero_noflag'
+
+    categoricals:
+    - # How many of the top 50 lab codes (for the ones that have LOINC)
+      column: 'event_code'
+      choice_query: |
+              SELECT DISTINCT event_code_upper
+                      FROM (
+                               SELECT upper(event_code) as event_code_upper, 
+                                      count(*) as counts
+                                FROM labs
+                                GROUP BY upper(event_code) order by count(*) desc limit 10
+                           ) AS lab_counts 
+              
+      metrics: 
+        - 'max' 
+        - 'count' 
+
+    - # How many of the top 50 lab codes (based on component_id which is more populated)
+      column: 'component_id'
+      choice_query: |
+              SELECT DISTINCT component_id_upper
+                      FROM (
+                               SELECT component_id as component_id_upper, 
+                                      count(*) as counts
+                                FROM labs
+                                GROUP BY component_id order by count(*) desc limit 10
+                           ) AS lab_counts 
+              
+      metrics: 
+        - 'max'
+        - 'sum'
+
+
+    aggregates:
+    - # total number of past labs
+      quantity:
+        total: "*"
+      metrics:
+        - 'count'
+
+    intervals: ['1month','12month','all']
+
+  -  #meds
+    prefix: 'meds'
+    from_obj: 'medications'
+    knowledge_date_column: 'event_dttm'
+
+    categoricals_imputation:
+            all:
+                type: 'null_category'
+    aggregates_imputation:
+            all:
+                type: 'zero_noflag' 
+    aggregates:
+    - # total number of past meds
+      quantity:
+        total: "*"
+      metrics:
+        - 'count'
+
+
+    - # ACE inhibitors
+      quantity:
+        ace: "case when Pharm_Subclass = 3610 and discon_time is not null then 1 else 0 end"
+      metrics:
+        - 'max'
+        - 'sum'
+
+    - # potassium sparing diuretics
+      quantity:
+        psd: "case when Pharm_Subclass = 3750 and discon_time is not null then 1 else 0 end"
+      metrics:
+        - 'max'
+        - 'sum'
+
+    - # Angiotensin II receptor antagonists
+      quantity:
+        arb: "case when Pharm_Subclass = 3615 and discon_time is not null  then 1 else 0 end"
+      metrics:
+        - 'max'
+        - 'sum'
+
+    - # Sodium-Glucose Co-Transporter 2 (SGLT2) Inhibitors
+      quantity:
+        sglt: "case when Pharm_Subclass = 2770 and discon_time is not null  then 1 else 0 end"
+      metrics:
+        - 'max'
+        - 'sum'
+
+    intervals: ['1month','3month','12month','all']
+
+  -  #egfr
+    prefix: 'egfr'
+    from_obj: 'egfr_analysis' 
+    knowledge_date_column: 'result_date' 
+
+    categoricals_imputation:
+            all:
+                type: 'null_category'
+    aggregates_imputation:
+            all:
+                type: 'zero_noflag' 
+
+    aggregates:
+    - # total number of past eGFR tests
+      quantity:
+        total: "*"
+      metrics:
+        - 'count'
+
+    - # total number of abnormal eGFR tests
+      quantity:
+        abnormal: "case when stage_3_plus = 1 then 1 else 0 end" 
+      metrics:
+        - 'sum' #KR: I think this is a sum not a count
+
+    intervals: ['1month','3month','12month','all']
+
+  - # days since last lab value
+    prefix: 'last_egfrs'
+    from_obj: 'egfr_analysis' 
+    knowledge_date_column: 'result_date' 
+    aggregates_imputation:
+      all:
+        type: 'mean'
+    
+    aggregates:
+    - # days since first and last eGFR
+      quantity:
+        last_encounter: "'{collate_date}'::DATE - result_date::DATE"
+      metrics:
+          - 'min'
+          - 'max'
+      imputation:
+        all:
+          type: 'constant'
+          value: 10000
+
+    #   quantity:
+    #     last_egfr: "(select distinct(clean_value) from egfr_analysis where result_date in 
+    #                             (select max(result_date) from egfr_analysis))"
+    #   metrics:
+    #       - 'min'
+    #   imputation:
+    #     all:
+    #       type: 'constant'
+    #       value: 99999
+    intervals: ['50y']
+
+    prefix: 'uacr'
+    from_obj: 'uacr_analysis'
+    knowledge_date_column: 'result_date'
+
+    categoricals_imputation:
+            all:
+                type: 'null_category'
+    aggregates_imputation:
+            all:
+                type: 'zero_noflag' 
+
+    aggregates:
+    - # total number of past uacr tests
+      quantity:
+        total: "*"
+      metrics:
+        - 'count'
+
+    - # total number of abnormal uacr tests
+      quantity:
+        abnormal: "case when ckd_uacr = 1 then 1 else 0 end" 
+      metrics:
+        - 'sum' 
+
+    intervals: ['1month','3month','12month','all']
+
+  - # days since last lab
+    prefix: 'last_uacrs'
+    from_obj: 'uacr_analysis' 
+    knowledge_date_column: 'result_date'
+    aggregates_imputation:
+      all:
+        type: 'mean'
+    
+    aggregates:
+    - # days since first and last UACR
+      quantity:
+        last_encounter: "'{collate_date}'::DATE - result_date::DATE"
+      metrics:
+          - 'min'
+          - 'max'
+      imputation:
+        all:
+          type: 'constant'
+          value: 10000
+
+ 
+    #   quantity:
+    #     last_uacr: "(select distinct(clean_value) from penn.uacr_analysis where event_dttm in 
+    #                             (select max(event_dttm) from penn.uacr_analysis))"
+    #   metrics:
+    #       - 'min'
+    #   imputation:
+    #     all:
+    #       type: 'constant'
+    #       value: 99999
+    intervals: ['50y']
+
+  -  #conditions
+    prefix: 'conditions'
+    from_obj: 'conditions' 
+    knowledge_date_column: 'event_dttm'
+
+    aggregates_imputation:
+      all:
+        type: 'zero_noflag'
+
+
+    categoricals_imputation:
+      all:
+        type: 'null_category'    
+
+    categoricals:
+    - # top 50 diagnosis
+      column: 'event_code'
+      choice_query: |
+              SELECT DISTINCT event_code
+                      FROM (
+                               SELECT event_code, 
+                                      count(*)
+                                FROM conditions
+                                GROUP BY event_code order by count(*) desc limit 10
+                           ) AS code_counts
+              
+      metrics: 
+        - 'max'
+        - 'count'
+
+    aggregates:
+    - #number of conditions
+      quantity:
+        total: "*"
+      metrics: ['count']
+
+    - # 
+      quantity:
+        AMI: "case when event_code like '%I23%' 
+              or event_code like '%I31.2%' 
+              then 1 else 0 end"
+      metrics: ['sum']
+
+    - # 
+      quantity:
+        CHF: "case when event_code like '%I50%' 
+              then 1 else 0 end"
+      metrics: ['sum']
+
+    - # 
+      quantity:
+        PeripheralArteryDisease: "case when event_code like '%I73%' 
+              then 1 else 0 end"
+      metrics: ['sum']
+
+    - # 
+      quantity:
+        prerenalInjury: "case when event_code like '%R39.2%' 
+              then 1 else 0 end"
+      metrics: ['sum']
+
+    - # 
+      quantity:
+        sepsis: "case 
+              when event_code like '%A02.1%' then 1
+              when event_code like '%A22.7%' then 1
+              when event_code like '%A26.7%' then 1
+              when event_code like '%A40%' then 1
+              when event_code like '%A41%' then 1
+              when event_code like '%A42.7%' then 1
+              when event_code like '%A54.86%' then 1
+              when event_code like '%B37.7%' then 1
+              when event_code like '%O85%' then 1
+              when event_code like '%P36%' then 1
+              when event_code like '%R65%' then 1
+              else 0 end"
+      metrics: 
+        - 'sum'
+
+    - # 
+      quantity:
+        volumeDepletion: "case 
+              when event_code like '%E86%' then 1
+              else 0 end"
+      metrics: 
+        - 'sum'
+
+    - # 
+      quantity:
+        shock: "case 
+              when event_code like '%D78%' then 1
+              when event_code like '%E36%' then 1
+              when event_code like '%G97%' then 1
+              when event_code like '%I97%' then 1
+              when event_code like '%J95%' then 1
+              when event_code like '%K68.11%' then 1
+              when event_code like '%k91%' then 1
+              when event_code like '%L76%' then 1
+              when event_code like '%M96%' then 1
+              when event_code like '%N99%' then 1
+              when event_code like '%O03%' then 1
+              else 0 end"
+      metrics: 
+        - 'sum' 
+    
+    - #the codes in the like codition correspond to diabetes 
+      quantity:
+        diabetes: "case 
+              when event_code like '%E11%' then 1 
+              when event_code like '%E13%' then 1 
+              when event_code like '%O24%' then 1 
+              else 0 end"
+      metrics: 
+        - 'sum'
+    
+    - # 
+      quantity:
+        hypertension: "case 
+              when event_code like '%I11.9%' then 1 
+              when event_code like '%I12.9%' then 1 
+              when event_code like '%I13.10%' then 1 
+              when event_code like '%I16.0%' then 1     
+              when event_code like '%I16.1%' then 1 
+              when event_code like '%I16.94%' then 1                      
+              else 0 end"
+      metrics: 
+        - 'sum'
+
+intervals: ['1month','3month','12month','all']
+#########################################################################################################################  
+###########################################################No changes beyond this point###########################################################
+
+#model_grid_preset:  'quickstart'
+grid_config:
+
+      'triage.component.catwalk.baselines.rankers.BaselineRankMultiFeature':
+        rules:
+            - [{feature: 'days_since_entity_id_all_last_encounter_min', low_value_high_score: True}]
+            - [{feature: 'egfr_entity_id_all_total_count', low_value_high_score: False}]
+            - [{feature: 'egfr_entity_id_all_abnormal_sum', low_value_high_score: False}]
+            - [{feature: 'demos_entity_id_all_age_max', low_value_high_score: False}]
+            - [{feature: 'conditions_entity_id_all_total_count', low_value_high_score: False}]
+            - [{feature: 'encounters_entity_id_all_total_count', low_value_high_score: True}]
+
+
+      'sklearn.dummy.DummyClassifier':
+        strategy: ['prior']
+ 
+      'triage.component.catwalk.estimators.classifiers.ScaledLogisticRegression':
+        penalty: ['l2', 'l1']
+        C: [0.0001,0.001, 0.01,0.1,1,5]
+
+      'sklearn.tree.DecisionTreeClassifier':
+        criterion: ['gini']
+        max_depth: [1, 2, 5, 10, 30]
+        min_samples_split: [10]
+
+
+      'sklearn.ensemble.RandomForestClassifier':
+        n_estimators: [1000,5000,10000]
+        criterion: ['gini']
+        max_depth: [10, 100]
+        min_samples_split: [2, 10]
+        n_jobs: [-2] 
+        
+      'lightgbm.LGBMClassifier':
+       max_depth: [10]
+       num_leaves: [30]
+       n_estimators: [300]
+       boosting_type: ['dart']
+ 
+
+scoring:
+    testing_metric_groups:
+        -
+          metrics: [precision@, recall@]
+          thresholds:
+            percentiles: [1, 2, 3, 4, 5, 6, 7, 8, 9, 
+                              10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                              20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 
+                              30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 
+                              40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
+                              50, 51, 52, 53, 54, 55, 56, 57, 58, 59,
+                              60, 61, 62, 63, 64, 65, 66, 67, 68, 69,
+                              70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
+                              80, 81, 82, 83, 84, 85, 86, 87, 88, 89,
+                              90, 91, 92, 93, 94, 95, 96, 97, 98, 99,
+                              100]
+            top_n: [100, 200, 500, 1000]
+        -
+          metrics: [roc_auc] 
+
+    training_metric_groups:
+      -
+          metrics: [precision@, recall@]
+          thresholds:
+            percentiles: [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+
+
+# BIAS AUDIT (optional, please comment the bias_audit_config section if not interested in knowing the biases and equity of the models)
+# Every evaluation will include a bias audit (using the Aequitas toolkit).
+# To run the bias audit it is necessary to define the protected groups by defining attributes (e.g. race) for every entity
+# from_obj parameter: it can be a table name or a query (such as with features generators)
+# The from_obj is expected to have the protected attributes in a single table with a entity_id and knowledge date column
+# Triage will use the most recent entry of the source table with date < than current as_of_date as the value for those attributes in a given as of date
+#
+# thresholds:
+# Running the bias audit might be slow, so the user should specify which thresholds should be used for the bias audit.
+# Percentiles *should be between 0 and 100*, much like Triage model scoring config.
+# People familiar with Aequitas may note that this differs from its expected values - Triage will do the conversion for Aequitas.
+#
+# ref groups:
+# Please have a look to Aequitas documentation for further information about the ref_groups_method
+# https://dssg.github.io/aequitas/config.html
+# By default uses the min_metric, meaning for each bias metric it uses as reference the group with minimum metric value (e.g. the group defined by race that has the lower FPR)
+# Alternatively it can be 'majority' (picks the largest group to serve as reference) or 'predefined' (needs a list of key values, see below)
+# bias_audit_config:
+#     from_obj_table: 'demographics'
+#     attribute_columns: ['race', 'gender','ethnicity']
+#     knowledge_date_column: 'birth_date'
+#     entity_id_column: 'entity_id'
+#     ref_groups_method: 'majority'
+#     thresholds:
+#         percentiles: [1,5,10,20]
