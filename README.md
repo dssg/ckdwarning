@@ -18,6 +18,17 @@ Predict the top k individuals (based on intervention capacity) who are risk of h
 - Metric: Precision (PPV) at top k (:warning: need to determine k based on capacity)
 - Fairness metric: TPR disparity by Race, Gender, SES, access, etc.
 
+
+## Methodology
+1. Define Cohort based on formulation
+2. Define Outcome/Label based on formulation (will get diagnosed with X in the next z months)
+3. Define Training and Validation sets over time
+$. Train Models on each training set and score all patients in the corresponding validation set 
+6. Evaluate all models for each validation time according to metric (PPV at top k)
+7. Select "Best" model based on results over time
+8. Explore the model to understand who it flags, how they compare to the cohort, important predictors
+9. Check and/or correct for bias issues
+
 ## Triage background
 We are using [Triage](https://github.com/dssg/triage) to build and select models. Some background and tutorials on Triage:
 - [Tutorial on Google Colab](https://colab.research.google.com/github/dssg/triage/blob/master/example/colab/colab_triage.ipynb) - Are you completely new to Triage? Run through a quick tutorial hosted on google colab (no setup necessary) to see what triage can do!
