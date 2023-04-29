@@ -23,7 +23,8 @@ Predict the top k individuals (based on intervention capacity) who are risk of h
 1. Define Cohort based on formulation
 2. Define Outcome/Label based on formulation (will get diagnosed with X in the next z months)
 3. Define Training and Validation sets over time
-$. Train Models on each training set and score all patients in the corresponding validation set 
+4. Define and generate predictors 
+5. Train Models on each training set and score all patients in the corresponding validation set 
 6. Evaluate all models for each validation time according to metric (PPV at top k)
 7. Select "Best" model based on results over time
 8. Explore the model to understand who it flags, how they compare to the cohort, important predictors
